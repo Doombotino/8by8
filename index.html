@@ -1,0 +1,894 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CuBiC - 3D Space Battle Map (8x8x8)</title>
+    <style>
+        body {
+            margin: 0;
+            font-family: Arial, sans-serif;
+            background: #000;
+            color: #fff;
+            overflow: hidden;
+        }
+        #menu {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            z-index: 100;
+            background: rgba(0, 0, 0, 0.8);
+            padding: 20px;
+            border-radius: 10px;
+        }
+        button {
+            padding: 15px 30px;
+            margin: 10px;
+            font-size: 18px;
+            cursor: pointer;
+            background: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            transition: background 0.3s;
+        }
+        button:hover {
+            background: #45a049;
+        }
+        #returnButton {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            z-index: 100;
+            display: none;
+        }
+        #error {
+            position: fixed;
+            bottom: 20px;
+            left: 20px;
+            background: rgba(255, 0, 0, 0.8);
+            padding: 10px;
+            border-radius: 5px;
+            display: none;
+        }
+        #version {
+            position: absolute;
+            bottom: 10px;
+            right: 10px;
+            font-size: 12px;
+            color: rgba(255, 255, 255, 0.5);
+        }
+    </style>
+    <script async src="https://cdn.jsdelivr.net/npm/es-module-shims@1.8.0/dist/es-module-shims.js"></script>
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://cdn.jsdelivr.net/npm/three@0.162.0/build/three.module.js",
+            "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.162.0/examples/jsm/",
+            "three/examples/jsm/controls/OrbitControls": "https://cdn.jsdelivr.net/npm/three@0.162.0/examples/jsm/controls/OrbitControls.js",
+            "three/examples/jsm/webxr/VRButton": "https://cdn.jsdelivr.net/npm/three@0.162.0/examples/jsm/webxr/VRButton.js",
+            "three/examples/jsm/webxr/XRControllerModelFactory": "https://cdn.jsdelivr.net/npm/three@0.162.0/examples/jsm/webxr/XRControllerModelFactory.js"
+        }
+    }
+    </script>
+</head>
+<body>
+    <div id="menu">
+        <h1>CuBiC</h1>
+        <h2>3D Space Battle Map (8x8x8)</h2>
+        <button id="pcButton">PC Mode</button>
+        <button id="mobileButton">Mobile Mode</button>
+        <button id="vrButton">VR Mode</button>
+        <div id="version">v2.1</div>
+        <div id="autoRotateDiv">
+            <input type="checkbox" id="autoRotate">
+            <label for="autoRotate">Start with Auto-Rotation</label>
+        </div>
+    </div>
+    <button id="returnButton">Return to Menu</button>
+    <div id="error"></div>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls';
+        import { VRButton } from 'three/examples/jsm/webxr/VRButton';
+        import { XRControllerModelFactory } from 'three/examples/jsm/webxr/XRControllerModelFactory';
+
+        // Constants
+        const GRID_SIZE = 8;
+        const CUBE_SIZE = 128;
+        const DOT_SIZE = 0.3;
+        const DOT_SPACING = CUBE_SIZE / (GRID_SIZE - 1);
+        const INITIAL_LINE_INTERVAL = 200;
+        const SLOW_LINE_INTERVAL = 1000;
+        const LINE_THRESHOLD = 150;
+        const CORNER_CUBE_SIZE = DOT_SIZE * 4;
+        const ROTATION_SPEED = 0.0002;
+        const VR_ROTATION_SPEED = 2.0;
+        const LINE_WIDTH = 2;
+        const LINE_GROWTH_SPEED = DOT_SPACING / 60;
+        const MOVEMENT_SPEED = 0.8;
+        const MAX_LINES = 300;
+        const LINE_POOL_SIZE = MAX_LINES;
+        const VR_SCALE_SENSITIVITY = 0.02;
+        const VR_GRAB_DISTANCE = 0.5;
+        const VR_MOVEMENT_SPEED = 2.0;
+
+        // Game state
+        let camera, scene, renderer;
+        let controls;
+        let mainCube;
+        let dots = [];
+        let lines = [];
+        let linePool = [];
+        let unusedLines = [];
+        let lineGenerationInterval = null;
+        let animationFrameId = null;
+        let isVRMode = false;
+        let isMobileMode = false;
+        let controller1, controller2;
+        let controllerGrip1, controllerGrip2;
+        let cameraGroup;
+        let moveForward = false;
+        let moveBackward = false;
+        let moveLeft = false;
+        let moveRight = false;
+        let moveUp = false;
+        let moveDown = false;
+        let autoRotate = false;
+
+        // VR state
+        let vrState = {
+            isGrabbing1: false,
+            isGrabbing2: false,
+            grabPosition1: new THREE.Vector3(),
+            grabPosition2: new THREE.Vector3(),
+            initialScale: 1,
+            initialDistance: 0,
+            lastPosition1: new THREE.Vector3(),
+            lastPosition2: new THREE.Vector3(),
+            initialGrabVector: new THREE.Vector3()
+        };
+        let vrMovementActive = {
+            left: false,
+            right: false
+        };
+
+        // UI Elements
+        let menu, pcButton, mobileButton, vrButton, returnButton, autoRotateCheckbox;
+
+        // Corner colors
+        const CORNER_COLORS = [
+            { color: 0x000000, position: [0, 0, 0] },         // Black
+            { color: 0xFF0000, position: [GRID_SIZE-1, 0, 0] }, // Red
+            { color: 0x00FF00, position: [0, GRID_SIZE-1, 0] }, // Green
+            { color: 0x0000FF, position: [0, 0, GRID_SIZE-1] }, // Blue
+            { color: 0xFFFF00, position: [GRID_SIZE-1, GRID_SIZE-1, 0] }, // Yellow
+            { color: 0xFF00FF, position: [GRID_SIZE-1, 0, GRID_SIZE-1] }, // Magenta
+            { color: 0x00FFFF, position: [0, GRID_SIZE-1, GRID_SIZE-1] }, // Cyan
+            { color: 0xFFFFFF, position: [GRID_SIZE-1, GRID_SIZE-1, GRID_SIZE-1] } // White
+        ];
+
+        // Wait for DOM to be fully loaded
+        document.addEventListener('DOMContentLoaded', () => {
+            // Initialize UI Elements
+            menu = document.getElementById('menu');
+            pcButton = document.getElementById('pcButton');
+            mobileButton = document.getElementById('mobileButton');
+            vrButton = document.getElementById('vrButton');
+            returnButton = document.getElementById('returnButton');
+            autoRotateCheckbox = document.getElementById('autoRotate');
+
+            if (!menu || !pcButton || !mobileButton || !vrButton || !returnButton || !autoRotateCheckbox) {
+                console.error('Failed to initialize UI elements');
+                return;
+            }
+
+            // Event Listeners
+            pcButton.addEventListener('click', () => {
+                try {
+                    startPCMode();
+                } catch (error) {
+                    showError(`Error starting PC mode: ${error.message}`);
+                    console.error('PC mode error:', error);
+                }
+            });
+
+            mobileButton.addEventListener('click', () => {
+                try {
+                    startMobileMode();
+                } catch (error) {
+                    showError(`Error starting mobile mode: ${error.message}`);
+                    console.error('Mobile mode error:', error);
+                }
+            });
+
+            vrButton.addEventListener('click', () => {
+                try {
+                    startVRMode();
+                } catch (error) {
+                    showError(`Error starting VR mode: ${error.message}`);
+                    console.error('VR mode error:', error);
+                }
+            });
+
+            returnButton.addEventListener('click', () => {
+                try {
+                    returnToMenu();
+                } catch (error) {
+                    showError(`Error returning to menu: ${error.message}`);
+                    console.error('Return to menu error:', error);
+                }
+            });
+        });
+
+        function showError(message) {
+            const errorDiv = document.getElementById('error');
+            if (errorDiv) {
+                errorDiv.textContent = message;
+                errorDiv.style.display = 'block';
+                setTimeout(() => { errorDiv.style.display = 'none'; }, 5000);
+            }
+        }
+
+        function init() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x000000);
+
+            cameraGroup = new THREE.Group();
+            scene.add(cameraGroup);
+
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 2000);
+            if (isVRMode) {
+                camera.position.set(0, 0, CUBE_SIZE * 0.75);
+            } else if (isMobileMode) {
+                camera.position.set(CUBE_SIZE * 0.75, CUBE_SIZE * 0.75, CUBE_SIZE * 0.75);
+            } else {
+                camera.position.set(CUBE_SIZE * 0.5, CUBE_SIZE * 0.5, CUBE_SIZE * 0.75);
+            }
+            camera.lookAt(0, 0, 0);
+            cameraGroup.add(camera);
+
+            // Add touch detection meta tag
+            const viewport = document.querySelector("meta[name=viewport]");
+            if (viewport) {
+                viewport.content = "width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no";
+            }
+
+            // Clean up existing renderer if it exists
+            if (renderer && renderer.domElement && renderer.domElement.parentNode) {
+                renderer.domElement.parentNode.removeChild(renderer.domElement);
+                renderer.dispose();
+            }
+
+            renderer = new THREE.WebGLRenderer({ 
+                antialias: true,
+                logarithmicDepthBuffer: true,
+                powerPreference: "high-performance"
+            });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            document.body.appendChild(renderer.domElement);
+
+            // Clean up existing mainCube if it exists
+            if (mainCube) {
+                scene.remove(mainCube);
+                mainCube.traverse((object) => {
+                    if (object.geometry) object.geometry.dispose();
+                    if (object.material) {
+                        if (Array.isArray(object.material)) {
+                            object.material.forEach(material => material.dispose());
+                        } else {
+                            object.material.dispose();
+                        }
+                    }
+                });
+            }
+
+            mainCube = new THREE.Group();
+            mainCube.add(createCornerCubes());
+            mainCube.add(createDots());
+            scene.add(mainCube);
+
+            initializeLinePool();
+
+            if (lineGenerationInterval) {
+                clearInterval(lineGenerationInterval);
+            }
+            lineGenerationInterval = setInterval(() => {
+                createRandomLine();
+                if (lines.length >= LINE_THRESHOLD) {
+                    clearInterval(lineGenerationInterval);
+                    lineGenerationInterval = setInterval(createRandomLine, SLOW_LINE_INTERVAL);
+                }
+            }, INITIAL_LINE_INTERVAL);
+
+            window.addEventListener('resize', onWindowResize, false);
+            if (!isMobileMode) {
+                window.addEventListener('keydown', handleKeyDown);
+                window.addEventListener('keyup', handleKeyUp);
+            }
+        }
+
+        function startPCMode() {
+            isMobileMode = false;
+            isVRMode = false;
+            
+            // Initialize Three.js scene and components
+            init();
+            
+            // Set up PC-specific controls
+            controls = new OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+            controls.maxDistance = CUBE_SIZE * 2;
+            controls.minDistance = 0.1;
+            controls.enablePan = true;
+            controls.panSpeed = 1.0;
+            controls.rotateSpeed = 0.5;
+            
+            // Set auto-rotation based on checkbox
+            autoRotate = autoRotateCheckbox.checked;
+            
+            // Hide menu and show return button
+            menu.style.display = 'none';
+            returnButton.style.display = 'block';
+            
+            // Start animation loop
+            function animate() {
+                animationFrameId = requestAnimationFrame(animate);
+                controls.update();
+                updateCamera();
+                updateLines();
+                updateDotOpacity();
+                updateAutoRotation();
+                renderer.render(scene, camera);
+            }
+            animate();
+        }
+
+        function startMobileMode() {
+            isMobileMode = true;
+            isVRMode = false;
+            
+            // Initialize Three.js scene and components
+            init();
+            
+            // Set up mobile-specific controls
+            controls = new OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+            controls.maxDistance = CUBE_SIZE * 2;
+            controls.minDistance = 0.1;
+            controls.enablePan = false;
+            controls.rotateSpeed = 0.5;
+            controls.enableZoom = true;
+            controls.zoomSpeed = 1.0;
+            controls.touches = {
+                ONE: THREE.TOUCH.ROTATE,
+                TWO: THREE.TOUCH.DOLLY_PAN
+            };
+            
+            // Set auto-rotation based on checkbox
+            autoRotate = autoRotateCheckbox.checked;
+            
+            // Set up camera position
+            camera.position.set(CUBE_SIZE * 0.75, CUBE_SIZE * 0.75, CUBE_SIZE * 0.75);
+            camera.lookAt(0, 0, 0);
+            controls.update();
+            
+            // Hide menu and show return button
+            menu.style.display = 'none';
+            returnButton.style.display = 'block';
+            
+            // Start animation loop
+            function animate() {
+                animationFrameId = requestAnimationFrame(animate);
+                controls.update();
+                updateLines();
+                updateDotOpacity();
+                updateAutoRotation();
+                renderer.render(scene, camera);
+            }
+            animate();
+        }
+
+        function startVRMode() {
+            isVRMode = true;
+            isMobileMode = false;
+            
+            // Initialize Three.js scene and components
+            init();
+            setupVRControllers();
+            
+            // Keep the cube exactly where it is if it exists
+            if (!mainCube) {
+                mainCube = new THREE.Group();
+                mainCube.position.set(0, 0, -CUBE_SIZE * 0.75);
+                mainCube.scale.setScalar(1.0);
+                mainCube.add(createCornerCubes());
+                mainCube.add(createDots());
+                scene.add(mainCube);
+            }
+
+            // Set auto-rotation based on checkbox
+            autoRotate = autoRotateCheckbox.checked;
+
+            // Set up VR
+            document.body.appendChild(VRButton.createButton(renderer));
+            renderer.xr.enabled = true;
+            
+            // VR-specific optimizations
+            renderer.xr.setFramebufferScaleFactor(0.8);
+            renderer.setPixelRatio(1);
+            renderer.xr.setReferenceSpaceType('local-floor');
+            
+            renderer.physicallyCorrectLights = false;
+            renderer.toneMapping = THREE.NoToneMapping;
+            renderer.outputEncoding = THREE.LinearEncoding;
+            
+            // Hide menu and show return button
+            menu.style.display = 'none';
+            returnButton.style.display = 'block';
+            
+            // Start VR animation loop
+            animateVR();
+        }
+
+        function returnToMenu() {
+            // Cancel animation frame if running
+            if (animationFrameId) {
+                cancelAnimationFrame(animationFrameId);
+                animationFrameId = null;
+            }
+            
+            // Stop VR animation loop if active
+            if (isVRMode && renderer) {
+                renderer.setAnimationLoop(null);
+            }
+            
+            // Clear line generation interval
+            if (lineGenerationInterval) {
+                clearInterval(lineGenerationInterval);
+                lineGenerationInterval = null;
+            }
+
+            // Remove renderer from DOM
+            if (renderer && renderer.domElement && renderer.domElement.parentNode) {
+                renderer.domElement.parentNode.removeChild(renderer.domElement);
+            }
+            
+            // Remove VR button if present
+            const vrButton = document.querySelector('button.webvr-ui-button');
+            if (vrButton && vrButton.parentNode) {
+                vrButton.parentNode.removeChild(vrButton);
+            }
+            
+            // Show menu and hide return button
+            menu.style.display = 'block';
+            returnButton.style.display = 'none';
+            document.getElementById('error').style.display = 'none';
+            
+            // Dispose of controls if they exist
+            if (controls) {
+                controls.dispose();
+                controls = null;
+            }
+
+            // Clear dots array
+            dots = [];
+            
+            // Clean up THREE.js objects except lines
+            if (scene) {
+                scene.traverse((object) => {
+                    // Skip lines when disposing
+                    if (lines.includes(object)) return;
+                    
+                    if (object.geometry) object.geometry.dispose();
+                    if (object.material) {
+                        if (Array.isArray(object.material)) {
+                            object.material.forEach(material => material.dispose());
+                        } else {
+                            object.material.dispose();
+                        }
+                    }
+                });
+            }
+
+            // Reset mode flags
+            isVRMode = false;
+            isMobileMode = false;
+        }
+
+        function createCornerCubes() {
+            const cornerGroup = new THREE.Group();
+            
+            CORNER_COLORS.forEach(({ color, position }) => {
+                const geometry = new THREE.BoxGeometry(CORNER_CUBE_SIZE, CORNER_CUBE_SIZE, CORNER_CUBE_SIZE);
+                const material = new THREE.MeshStandardMaterial({
+                    color: color,
+                    emissive: color,
+                    emissiveIntensity: 0.5,
+                    side: THREE.DoubleSide
+                });
+                
+                const cube = new THREE.Mesh(geometry, material);
+                const [x, y, z] = position;
+                const posX = (x - (GRID_SIZE-1)/2) * DOT_SPACING;
+                const posY = (y - (GRID_SIZE-1)/2) * DOT_SPACING;
+                const posZ = (z - (GRID_SIZE-1)/2) * DOT_SPACING;
+                cube.position.set(posX, posY, posZ);
+
+                // Add wireframe for black cube
+                if (color === 0x000000) {
+                    const wireframe = new THREE.LineSegments(
+                        new THREE.EdgesGeometry(geometry),
+                        new THREE.LineBasicMaterial({ 
+                            color: 0xFFFFFF, 
+                            linewidth: LINE_WIDTH,
+                            side: THREE.DoubleSide
+                        })
+                    );
+                    cube.add(wireframe);
+                }
+
+                cornerGroup.add(cube);
+            });
+
+            return cornerGroup;
+        }
+
+        function createDots() {
+            const dotGroup = new THREE.Group();
+            const segments = isVRMode ? 4 : 6;
+            const geometry = new THREE.SphereGeometry(DOT_SIZE, segments, segments);
+            const material = new THREE.MeshStandardMaterial({
+                color: 0x808080,
+                emissive: 0x404040,
+                emissiveIntensity: 0.5,
+                transparent: true,
+                opacity: 0.2,
+                side: THREE.DoubleSide,
+                flatShading: isVRMode
+            });
+
+            const instancedMesh = new THREE.InstancedMesh(geometry, material, GRID_SIZE * GRID_SIZE * GRID_SIZE);
+            instancedMesh.userData.dots = [];
+            let instanceCount = 0;
+            const matrix = new THREE.Matrix4();
+
+            for (let x = 0; x < GRID_SIZE; x++) {
+                for (let y = 0; y < GRID_SIZE; y++) {
+                    for (let z = 0; z < GRID_SIZE; z++) {
+                        const posX = (x - (GRID_SIZE-1)/2) * DOT_SPACING;
+                        const posY = (y - (GRID_SIZE-1)/2) * DOT_SPACING;
+                        const posZ = (z - (GRID_SIZE-1)/2) * DOT_SPACING;
+                        
+                        matrix.setPosition(posX, posY, posZ);
+                        instancedMesh.setMatrixAt(instanceCount, matrix);
+                        
+                        const dotData = {
+                            position: new THREE.Vector3(posX, posY, posZ),
+                            gridPosition: { x, y, z },
+                            instanceId: instanceCount,
+                            isCorner: (x === 0 || x === GRID_SIZE-1) && 
+                                    (y === 0 || y === GRID_SIZE-1) && 
+                                    (z === 0 || z === GRID_SIZE-1)
+                        };
+                        dots.push(dotData);
+                        instancedMesh.userData.dots.push(dotData);
+                        
+                        instanceCount++;
+                    }
+                }
+            }
+
+            instancedMesh.count = instanceCount;
+            dotGroup.add(instancedMesh);
+            return dotGroup;
+        }
+
+        function initializeLinePool() {
+            const positions = new Float32Array(6);
+            const geometry = new THREE.BufferGeometry();
+            geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+
+            for (let i = 0; i < LINE_POOL_SIZE; i++) {
+                const material = new THREE.LineBasicMaterial({
+                    transparent: true,
+                    opacity: 0.6,
+                    linewidth: LINE_WIDTH,
+                    side: THREE.DoubleSide,
+                    depthTest: true,
+                    depthWrite: true,
+                    blending: THREE.AdditiveBlending
+                });
+
+                const line = new THREE.Line(geometry.clone(), material);
+                line.frustumCulled = false;
+                line.visible = false;
+                mainCube.add(line);
+                linePool.push(line);
+                unusedLines.push(line);
+            }
+        }
+
+        function updateDotOpacity() {
+            if (!camera || !mainCube) return;
+
+            const instancedMesh = mainCube.children.find(child => child.isInstancedMesh);
+            if (!instancedMesh || !instancedMesh.userData.dots) return;
+
+            const cameraPosition = new THREE.Vector3();
+            camera.getWorldPosition(cameraPosition);
+            const tempMatrix = new THREE.Matrix4();
+            const tempPosition = new THREE.Vector3();
+            const opacityMatrix = new THREE.Matrix4();
+
+            instancedMesh.userData.dots.forEach((dot) => {
+                instancedMesh.getMatrixAt(dot.instanceId, tempMatrix);
+                tempPosition.setFromMatrixPosition(tempMatrix);
+                const worldPosition = tempPosition.clone().applyMatrix4(mainCube.matrixWorld);
+
+                const distance = cameraPosition.distanceTo(worldPosition);
+                const maxDistance = CUBE_SIZE * 0.5;
+                const minOpacity = 0.2;
+                const maxOpacity = 0.8;
+
+                let opacity = minOpacity;
+                if (distance < maxDistance) {
+                    opacity = maxOpacity - (distance / maxDistance) * (maxOpacity - minOpacity);
+                }
+
+                instancedMesh.getMatrixAt(dot.instanceId, opacityMatrix);
+                opacityMatrix.elements[15] = opacity;
+                instancedMesh.setMatrixAt(dot.instanceId, opacityMatrix);
+            });
+
+            instancedMesh.instanceMatrix.needsUpdate = true;
+        }
+
+        function updateAutoRotation() {
+            if (!autoRotate || !mainCube) return;
+            
+            const AUTO_ROTATION_SPEED = 0.001;
+            const rotationPhase = Date.now() * AUTO_ROTATION_SPEED;
+            
+            const xRotation = Math.sin(rotationPhase) * AUTO_ROTATION_SPEED;
+            const yRotation = Math.cos(rotationPhase * 1.3) * AUTO_ROTATION_SPEED;
+            const zRotation = Math.sin(rotationPhase * 0.7) * AUTO_ROTATION_SPEED;
+            
+            mainCube.rotation.x += xRotation;
+            mainCube.rotation.y += yRotation;
+            mainCube.rotation.z += zRotation;
+        }
+
+        function handleKeyDown(event) {
+            switch (event.code) {
+                case 'KeyW': moveForward = true; break;
+                case 'KeyS': moveBackward = true; break;
+                case 'KeyA': moveLeft = true; break;
+                case 'KeyD': moveRight = true; break;
+                case 'Space': moveUp = true; break;
+                case 'ShiftLeft': moveDown = true; break;
+            }
+        }
+
+        function handleKeyUp(event) {
+            switch (event.code) {
+                case 'KeyW': moveForward = false; break;
+                case 'KeyS': moveBackward = false; break;
+                case 'KeyA': moveLeft = false; break;
+                case 'KeyD': moveRight = false; break;
+                case 'Space': moveUp = false; break;
+                case 'ShiftLeft': moveDown = false; break;
+            }
+        }
+
+        function updateCamera() {
+            if (!isVRMode) {
+                const direction = new THREE.Vector3();
+                camera.getWorldDirection(direction);
+                const right = new THREE.Vector3();
+                right.crossVectors(camera.up, direction).normalize();
+
+                const speed = MOVEMENT_SPEED;
+
+                if (moveForward) camera.position.addScaledVector(direction, speed);
+                if (moveBackward) camera.position.addScaledVector(direction, -speed);
+                if (moveRight) camera.position.addScaledVector(right, -speed);
+                if (moveLeft) camera.position.addScaledVector(right, speed);
+                if (moveUp) camera.position.y += speed;
+                if (moveDown) camera.position.y -= speed;
+
+                if (controls) {
+                    const targetDistance = 1;
+                    controls.target.copy(camera.position).add(direction.multiplyScalar(targetDistance));
+                }
+            }
+        }
+
+        function onWindowResize() {
+            if (!camera || !renderer) return;
+            
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        }
+
+        function getLineFromPool() {
+            let line;
+            if (unusedLines.length > 0) {
+                line = unusedLines.pop();
+                line.visible = true;
+            } else if (lines.length >= MAX_LINES) {
+                // Recycle the oldest line
+                line = lines.shift();
+                lines.push(line);
+            }
+            return line;
+        }
+
+        function findNearestDot(position, direction) {
+            const startGridPos = {
+                x: Math.round((position.x / DOT_SPACING) + (GRID_SIZE-1)/2),
+                y: Math.round((position.y / DOT_SPACING) + (GRID_SIZE-1)/2),
+                z: Math.round((position.z / DOT_SPACING) + (GRID_SIZE-1)/2)
+            };
+
+            // Calculate target position (only one step in the given direction)
+            const targetPos = {
+                x: startGridPos.x + direction.x,
+                y: startGridPos.y + direction.y,
+                z: startGridPos.z + direction.z
+            };
+
+            // Check if target position is within bounds
+            if (targetPos.x < 0 || targetPos.x >= GRID_SIZE ||
+                targetPos.y < 0 || targetPos.y >= GRID_SIZE ||
+                targetPos.z < 0 || targetPos.z >= GRID_SIZE) {
+                return null;
+            }
+
+            // Find dot at target position
+            return dots.find(dot => {
+                const pos = dot.gridPosition;
+                return pos.x === targetPos.x && 
+                       pos.y === targetPos.y && 
+                       pos.z === targetPos.z;
+            });
+        }
+
+        function createRandomLine() {
+            if (dots.length === 0) return;
+
+            // Start with corner dots if there are no lines yet
+            let startDot;
+            if (lines.length === 0) {
+                // Filter corner dots
+                const cornerDots = dots.filter(dot => dot.isCorner);
+                startDot = cornerDots[Math.floor(Math.random() * cornerDots.length)];
+            } else {
+                // After initial corner connections, give higher priority to corner dots
+                const cornerDots = dots.filter(dot => dot.isCorner);
+                const shouldUseCorner = Math.random() < 0.3; // 30% chance to start from a corner
+                startDot = shouldUseCorner ? 
+                    cornerDots[Math.floor(Math.random() * cornerDots.length)] :
+                    dots[Math.floor(Math.random() * dots.length)];
+            }
+
+            // Only orthogonal directions (U/D/L/R/F/B)
+            const directions = [
+                new THREE.Vector3(1, 0, 0),   // Right
+                new THREE.Vector3(-1, 0, 0),  // Left
+                new THREE.Vector3(0, 1, 0),   // Up
+                new THREE.Vector3(0, -1, 0),  // Down
+                new THREE.Vector3(0, 0, 1),   // Forward
+                new THREE.Vector3(0, 0, -1)   // Backward
+            ];
+
+            const direction = directions[Math.floor(Math.random() * directions.length)];
+            const startPoint = startDot.position.clone();
+            
+            // Find target dot in chosen direction (only one step)
+            const endDot = findNearestDot(startPoint, direction);
+            if (!endDot) return;
+
+            // Check if this line already exists
+            const lineExists = lines.some(line => {
+                if (!line.userData) return false;
+                const start = line.userData.startPoint;
+                const end = line.userData.endPoint;
+                return (start.equals(startPoint) && end.equals(endDot.position)) ||
+                       (start.equals(endDot.position) && end.equals(startPoint));
+            });
+            if (lineExists) return;
+
+            const targetLength = startPoint.distanceTo(endDot.position);
+            
+            // Get a line from the pool
+            const line = getLineFromPool();
+            if (!line) return;
+
+            // If starting from a corner, use that corner's color
+            let lineColor;
+            if (startDot.isCorner || endDot.isCorner) {
+                // Find the matching corner color
+                const cornerColor = CORNER_COLORS.find(cc => {
+                    const [x, y, z] = cc.position;
+                    return (startDot.isCorner && startDot.gridPosition.x === x && 
+                           startDot.gridPosition.y === y && startDot.gridPosition.z === z) ||
+                           (endDot.isCorner && endDot.gridPosition.x === x && 
+                           endDot.gridPosition.y === y && endDot.gridPosition.z === z);
+                });
+                lineColor = cornerColor ? cornerColor.color : CORNER_COLORS[Math.floor(Math.random() * CORNER_COLORS.length)].color;
+            } else {
+                lineColor = CORNER_COLORS[Math.floor(Math.random() * CORNER_COLORS.length)].color;
+            }
+            line.material.color.setHex(lineColor);
+
+            // Update line geometry
+            const positions = line.geometry.attributes.position.array;
+            positions[0] = startPoint.x;
+            positions[1] = startPoint.y;
+            positions[2] = startPoint.z;
+            positions[3] = startPoint.x;
+            positions[4] = startPoint.y;
+            positions[5] = startPoint.z;
+            
+            line.geometry.attributes.position.needsUpdate = true;
+            
+            line.userData = {
+                startPoint: startPoint,
+                endPoint: endDot.position,
+                currentLength: 0,
+                targetLength: targetLength,
+                growing: true
+            };
+            
+            if (!lines.includes(line)) {
+                lines.push(line);
+            }
+        }
+
+        function updateLines() {
+            const time = Date.now() * 0.001;
+            lines.forEach(line => {
+                if (!line.visible || !line.userData) return;
+
+                if (line.userData.growing) {
+                    line.userData.currentLength = Math.min(
+                        line.userData.currentLength + LINE_GROWTH_SPEED,
+                        line.userData.targetLength
+                    );
+
+                    if (line.userData.currentLength >= line.userData.targetLength) {
+                        line.userData.growing = false;
+                    }
+
+                    const positions = line.geometry.attributes.position.array;
+                    const direction = line.userData.endPoint.clone()
+                        .sub(line.userData.startPoint)
+                        .normalize();
+                    const endPoint = line.userData.startPoint.clone().add(
+                        direction.multiplyScalar(line.userData.currentLength)
+                    );
+
+                    positions[3] = endPoint.x;
+                    positions[4] = endPoint.y;
+                    positions[5] = endPoint.z;
+
+                    line.geometry.attributes.position.needsUpdate = true;
+                }
+
+                // Smoother pulsing effect
+                line.material.opacity = 0.6 + Math.sin(time + line.userData.startPoint.x) * 0.2;
+            });
+        }
+    </script>
+</body>
+</html> 
